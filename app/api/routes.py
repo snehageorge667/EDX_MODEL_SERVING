@@ -12,27 +12,38 @@ router = APIRouter()
 
 
 # ---------------- CACHE ----------------
-CACHE_DATA = None
-CACHE_TIME = None
-CACHE_TTL = 300  # seconds (5 min)
+CACHE_DATA = {}
+CACHE_TIME = {}
+CACHE_TTL = 300  # seconds
+
+
+# ---------------- PAIR FIX ----------------
+def build_pair(base_currency: str, target_currency: str):
+    base = base_currency.upper()
+    target = target_currency.upper()
+
+    if base == "USD":
+        return f"{target}=X"
+    else:
+        return f"{base}{target}=X"
 
 
 # ---------------- COMMON PIPELINE ----------------
-def get_latest_features():
+def get_latest_features(pair: str = "INR=X"):
     global CACHE_DATA, CACHE_TIME
 
     now = datetime.now()
 
-    if CACHE_DATA is not None and CACHE_TIME is not None:
-        if (now - CACHE_TIME).seconds < CACHE_TTL:
-            return CACHE_DATA
+    if pair in CACHE_DATA and pair in CACHE_TIME:
+        if (now - CACHE_TIME[pair]).seconds < CACHE_TTL:
+            return CACHE_DATA[pair]
 
     fetcher = DataFetcher()
     pre = DataPreprocessor()
     fe = FeatureEngineer()
 
     macro = fetcher.fetch_macro_indicators()
-    forex = fetcher.fetch_forex_data()
+    forex = fetcher.fetch_forex_data(pair=pair)
 
     df = pre.preprocess(macro_data=macro, forex_data=forex)
     df = fe.engineer_all_features(df)
@@ -40,8 +51,8 @@ def get_latest_features():
     if df.empty:
         raise HTTPException(status_code=500, detail="Feature dataframe is empty")
 
-    CACHE_DATA = df
-    CACHE_TIME = now
+    CACHE_DATA[pair] = df
+    CACHE_TIME[pair] = now
 
     return df
 
@@ -64,8 +75,8 @@ def xgb_today():
 @router.get("/sarimax/today")
 def sarimax_today():
     df = get_latest_features()
-    pred = predict_sarimax(df.tail(1))
-    return {"prediction": safe_value(pred.iloc[0])}
+    pred = predict_sarimax(df)
+    return {"prediction": safe_value(pred.iloc[-1])}
 
 
 # ---------------- DATE → STEPS ----------------
@@ -79,7 +90,6 @@ def calculate_days(target_date: str):
         )
 
     today = datetime.today().date()
-
     delta = (target - today).days
 
     if delta < 0:
@@ -94,22 +104,18 @@ def calculate_days(target_date: str):
 # ---------------- FUTURE LOGIC ----------------
 def iterative_forecast(df, model_type, steps):
     results = []
-
-    #  DO NOT recompute features every loop
     current_df = df.copy()
-
-    # start from today
     current_date = pd.Timestamp.today().normalize()
 
     for i in range(steps + 1):
 
-        latest = current_df.tail(1)
-
         try:
             if model_type == "xgb":
+                latest = current_df.tail(1)
                 pred = float(predict_xgboost(latest).iloc[0])
             else:
-                pred = float(predict_sarimax(latest).iloc[0])
+                pred_series = predict_sarimax(current_df)
+                pred = float(pred_series.iloc[-1])
 
             if pd.isna(pred) or np.isinf(pred):
                 pred = float(current_df["close"].iloc[-1])
@@ -117,7 +123,6 @@ def iterative_forecast(df, model_type, steps):
         except:
             pred = float(current_df["close"].iloc[-1])
 
-        # FIX DATE (start from today)
         if i > 0:
             current_date += pd.Timedelta(days=1)
 
@@ -126,19 +131,13 @@ def iterative_forecast(df, model_type, steps):
             "predicted_close": pred
         })
 
-        # ---------------- REAL FIX ----------------
-        # Instead of re-engineering everything, just simulate minimal forward movement
-
         new_row = current_df.tail(1).copy()
-
         prev_close = float(current_df["close"].iloc[-1])
         new_row["close"] = pred
 
-        # update simple dynamics
         if "returns" in new_row.columns and prev_close != 0:
             new_row["returns"] = np.log(pred / prev_close)
 
-        # shift lag features manually (if exist)
         for col in current_df.columns:
             if "lag" in col:
                 lag_num = int(col.split("_")[-1])
@@ -165,7 +164,6 @@ def xgb_future(
 ):
     df = get_latest_features()
     steps = calculate_days(target_date)
-
     preds = iterative_forecast(df, "xgb", steps)
 
     return {
@@ -184,10 +182,68 @@ def sarimax_future(
 ):
     df = get_latest_features()
     steps = calculate_days(target_date)
-
     preds = iterative_forecast(df, "sarimax", steps)
 
     return {
         "target_date": target_date,
         "predictions": preds
     }
+
+
+# ---------------- POST TODAY ----------------
+@router.post("/prediction/today")
+def prediction_today(base_currency: str, target_currency: str):
+    try:
+        pair = build_pair(base_currency, target_currency)
+
+        df = get_latest_features(pair=pair)
+
+        xgb_pred = float(predict_xgboost(df.tail(1)).iloc[0])
+        sarimax_pred = float(predict_sarimax(df).iloc[-1])
+
+        return {
+            "pair": f"{base_currency.upper()}_{target_currency.upper()}",
+            "date": datetime.today().strftime("%Y-%m-%d"),
+            "xgboost_prediction": safe_value(xgb_pred),
+            "sarimax_prediction": safe_value(sarimax_pred)
+        }
+
+    except HTTPException as e:
+        raise e
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------- POST FUTURE ----------------
+@router.post("/prediction/future")
+def prediction_future(
+    base_currency: str,
+    target_currency: str,
+    target_date: str = Query(
+        ...,
+        description="Enter date in format YYYY-MM-DD (e.g., 2026-04-24)",
+        example="2026-04-24"
+    )
+):
+    try:
+        pair = build_pair(base_currency, target_currency)
+
+        df = get_latest_features(pair=pair)
+        steps = calculate_days(target_date)
+
+        xgb_preds = iterative_forecast(df.copy(), "xgb", steps)
+        sarimax_preds = iterative_forecast(df.copy(), "sarimax", steps)
+
+        return {
+            "pair": f"{base_currency.upper()}_{target_currency.upper()}",
+            "target_date": target_date,
+            "xgboost_predictions": xgb_preds,
+            "sarimax_predictions": sarimax_preds
+        }
+
+    except HTTPException as e:
+        raise e
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

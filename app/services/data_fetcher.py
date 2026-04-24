@@ -32,7 +32,7 @@ class DataFetcher:
             response.raise_for_status()
             resp = response.json()
 
-            # ✅ RATE LIMIT HANDLING (safe retry max 2 times)
+            #  RATE LIMIT HANDLING (safe retry max 2 times)
             if "Note" in resp:
                 if retry < 2:
                     print(f"[{function}] Rate limit hit → retrying...")
@@ -42,7 +42,7 @@ class DataFetcher:
                     print(f"[{function}] Rate limit exceeded (skipping)")
                     return pd.DataFrame(columns=["date", "value"])
 
-            # ✅ API ERROR
+            # API ERROR
             if "Error Message" in resp:
                 print(f"[{function}] API error")
                 return pd.DataFrame(columns=["date", "value"])
