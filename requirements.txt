@@ -2,9 +2,10 @@ fastapi
 uvicorn
 pandas
 numpy
+requests
+yfinance
+python-dotenv
+apscheduler
 scikit-learn
 xgboost
 statsmodels
-yfinance
-python-dotenv
-requests

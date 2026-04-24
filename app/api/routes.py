@@ -30,14 +30,21 @@ def build_pair(base_currency: str, target_currency: str):
 
 # ---------------- COMMON PIPELINE ----------------
 def get_latest_features(pair: str = "INR=X"):
-    global CACHE_DATA, CACHE_TIME
+    global CACHE_DATA
 
-    now = datetime.now()
+    # ALWAYS use cache (scheduler handles refresh)
+    if pair in CACHE_DATA:
+        return CACHE_DATA[pair]
 
-    if pair in CACHE_DATA and pair in CACHE_TIME:
-        if (now - CACHE_TIME[pair]).seconds < CACHE_TTL:
-            return CACHE_DATA[pair]
+    #  If cache empty → fail fast (don’t fetch here)
+    raise HTTPException(
+        status_code=503,
+        detail="Data not ready yet. Please wait for scheduler to load data."
+    )
 
+
+# ---------------- FUNCTION USED ONLY BY SCHEDULER ----------------
+def load_and_store_features(pair: str):
     fetcher = DataFetcher()
     pre = DataPreprocessor()
     fe = FeatureEngineer()
@@ -49,10 +56,10 @@ def get_latest_features(pair: str = "INR=X"):
     df = fe.engineer_all_features(df)
 
     if df.empty:
-        raise HTTPException(status_code=500, detail="Feature dataframe is empty")
+        raise Exception("Feature dataframe is empty")
 
     CACHE_DATA[pair] = df
-    CACHE_TIME[pair] = now
+    CACHE_TIME[pair] = datetime.now()
 
     return df
 
@@ -195,7 +202,6 @@ def sarimax_future(
 def prediction_today(base_currency: str, target_currency: str):
     try:
         pair = build_pair(base_currency, target_currency)
-
         df = get_latest_features(pair=pair)
 
         xgb_pred = float(predict_xgboost(df.tail(1)).iloc[0])
@@ -210,7 +216,6 @@ def prediction_today(base_currency: str, target_currency: str):
 
     except HTTPException as e:
         raise e
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -228,8 +233,8 @@ def prediction_future(
 ):
     try:
         pair = build_pair(base_currency, target_currency)
-
         df = get_latest_features(pair=pair)
+
         steps = calculate_days(target_date)
 
         xgb_preds = iterative_forecast(df.copy(), "xgb", steps)
@@ -244,6 +249,5 @@ def prediction_future(
 
     except HTTPException as e:
         raise e
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
