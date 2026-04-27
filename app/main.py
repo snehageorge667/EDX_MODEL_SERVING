@@ -3,9 +3,10 @@ load_dotenv()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from threading import Thread   # ✅ IMPORTANT
 
 from app.api.routes import router
-from app.scheduler import start_scheduler, refresh_cache 
+from app.scheduler import start_scheduler, refresh_cache
 
 
 # ---------------- CREATE APP ----------------
@@ -45,10 +46,10 @@ def home():
 def startup_event():
     print("🚀 App starting...")
 
-    # preload cache once
-    refresh_cache()
+    # run cache loading in background (non-blocking)
+    Thread(target=refresh_cache).start()
 
-    # start scheduler
+    # scheduler continues to refresh periodically
     start_scheduler()
 
 

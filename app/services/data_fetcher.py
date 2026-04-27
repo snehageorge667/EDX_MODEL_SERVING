@@ -95,7 +95,7 @@ class DataFetcher:
 
             data[indicator] = df
 
-            # Slight delay to avoid rate limit (optimized)
+            # Slight delay to avoid rate limit
             time.sleep(12)
 
         return data

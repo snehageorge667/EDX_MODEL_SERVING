@@ -32,18 +32,22 @@ def build_pair(base_currency: str, target_currency: str):
 def get_latest_features(pair: str = "INR=X"):
     global CACHE_DATA
 
-    # ALWAYS use cache (scheduler handles refresh)
+    #  Use cache if available
     if pair in CACHE_DATA:
         return CACHE_DATA[pair]
 
-    #  If cache empty → fail fast (don’t fetch here)
-    raise HTTPException(
-        status_code=503,
-        detail="Data not ready yet. Please wait for scheduler to load data."
-    )
+    #  fallback load
+    try:
+        print(f"⚠️ Cache empty → loading {pair}...")
+        return load_and_store_features(pair)
+    except Exception as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Data loading failed. Retry shortly. Error: {str(e)}"
+        )
 
 
-# ---------------- FUNCTION USED ONLY BY SCHEDULER ----------------
+# ---------------- FUNCTION USED BY SCHEDULER ----------------
 def load_and_store_features(pair: str):
     fetcher = DataFetcher()
     pre = DataPreprocessor()

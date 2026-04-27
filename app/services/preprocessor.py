@@ -47,7 +47,7 @@ class DataPreprocessor:
 
             usable_frames.append(normalized_df)
 
-        # FIX: allow empty macro
+        # allow empty macro
         if not usable_frames:
             print("No macro data available. Proceeding without macro features.")
             return pd.DataFrame(columns=["date"])

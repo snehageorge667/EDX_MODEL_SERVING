@@ -32,7 +32,7 @@ def predict_xgboost(df: pd.DataFrame):
     if "close" in df.columns:
         last_close = df["close"].iloc[0]
     else:
-        last_close = 1  # fallback (should not happen ideally)
+        last_close = 1  # fallback
 
     # STEP 2: ensure all features exist
     for col in xgb_features:

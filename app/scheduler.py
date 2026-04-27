@@ -22,7 +22,7 @@ def refresh_cache():
             CACHE_DATA[pair] = df
             CACHE_TIME[pair] = datetime.now()
 
-            print(f"✅ Cache updated for {pair}")
+            print(f" Cache updated for {pair}")
 
         except Exception as e:
             print(f"❌ Failed for {base}_{target}:", str(e))
