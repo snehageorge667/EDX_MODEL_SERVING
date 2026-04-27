@@ -3,7 +3,7 @@ load_dotenv()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from threading import Thread   # ✅ IMPORTANT
+from threading import Thread
 
 from app.api.routes import router
 from app.scheduler import start_scheduler, refresh_cache
@@ -41,16 +41,25 @@ def home():
     }
 
 
+# Prevent duplicate scheduler start
+scheduler_started = False
+
+
 # ---------------- STARTUP ----------------
 @app.on_event("startup")
 def startup_event():
+    global scheduler_started
+
     print("🚀 App starting...")
 
-    # run cache loading in background (non-blocking)
+    # Run initial cache load
     Thread(target=refresh_cache).start()
 
-    # scheduler continues to refresh periodically
-    start_scheduler()
+    # Start scheduler ONLY once
+    if not scheduler_started:
+        start_scheduler()
+        scheduler_started = True
+        print(" Scheduler started")
 
 
 # ---------------- INCLUDE ROUTES ----------------

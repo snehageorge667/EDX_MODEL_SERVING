@@ -26,8 +26,8 @@ class DataPreprocessor:
     # ---------------- EXISTING METHODS ----------------
 
     def _normalize_macro_frame(self, df: pd.DataFrame) -> pd.DataFrame:
-        if df.empty:
-            return df
+        if df is None or df.empty:
+            return pd.DataFrame()
 
         macro_df = df.copy()
         macro_df["date"] = pd.to_datetime(macro_df["date"], errors="coerce")
@@ -63,8 +63,12 @@ class DataPreprocessor:
         return merged
 
     def _expand_macro_to_daily(self, macro_df: pd.DataFrame, forex_df: pd.DataFrame) -> pd.DataFrame:
+        if macro_df.empty or forex_df.empty:
+            return pd.DataFrame(columns=["date"])
+
         start_date = forex_df["date"].min()
         end_date = forex_df["date"].max()
+
         daily_index = pd.date_range(start=start_date, end=end_date, freq="D")
 
         expanded = macro_df.set_index("date").reindex(daily_index).ffill()
@@ -75,11 +79,29 @@ class DataPreprocessor:
         return expanded
 
     def merge_forex_macro(self, forex_df: pd.DataFrame, macro_df: pd.DataFrame, pair: str = "USDINR") -> pd.DataFrame:
+        
+        # CRITICAL FIX: handle empty forex safely
+        if forex_df is None or forex_df.empty:
+            print("⚠️ Forex data empty → returning empty dataframe")
+            return pd.DataFrame()
+
         forex_data = forex_df.copy()
 
         forex_data["date"] = pd.to_datetime(forex_data["date"], errors="coerce")
-        forex_data = forex_data.dropna(subset=["date", "open", "high", "low", "close"])
+
+        # ensure required columns exist
+        required_cols = ["date", "open", "high", "low", "close"]
+        for col in required_cols:
+            if col not in forex_data.columns:
+                print(f"⚠️ Missing column: {col}")
+                return pd.DataFrame()
+
+        forex_data = forex_data.dropna(subset=required_cols)
         forex_data = forex_data.sort_values("date").reset_index(drop=True)
+
+        if forex_data.empty:
+            print("⚠️ Forex data became empty after cleaning")
+            return pd.DataFrame()
 
         forex_data["currency_pair"] = pair
         forex_data["base_currency"] = pair[:3]
@@ -93,6 +115,10 @@ class DataPreprocessor:
             return forex_data
 
         daily_macro = self._expand_macro_to_daily(macro_df, forex_data)
+
+        if daily_macro.empty:
+            print("⚠️ Macro expansion failed → fallback to forex only")
+            return forex_data
 
         merged = pd.merge_asof(
             forex_data.sort_values("date"),
@@ -124,6 +150,10 @@ class DataPreprocessor:
             df["date"] = pd.to_datetime(df["date"], errors="coerce")
             df = df.sort_values("date").dropna()
 
+            if df.empty:
+                print("⚠️ Merged input became empty")
+                return pd.DataFrame()
+
             df["currency_pair"] = pair
             df["base_currency"] = pair[:3]
             df["target_currency"] = pair[3:]
@@ -137,6 +167,9 @@ class DataPreprocessor:
 
         macro_df = self.merge_macro_data(macro_data)
         processed_df = self.merge_forex_macro(forex_data, macro_df, pair=pair)
+
+        if processed_df.empty:
+            print("⚠️ Final processed dataframe is empty")
 
         print(f"Preprocessing complete. Final shape: {processed_df.shape}")
         return processed_df

@@ -9,6 +9,10 @@ from typing import Dict
 import time
 
 
+# GLOBAL CACHE 
+LAST_VALID_FOREX = None
+
+
 class DataFetcher:
     """Fetch economic indicators and forex data from external APIs."""
 
@@ -32,7 +36,6 @@ class DataFetcher:
             response.raise_for_status()
             resp = response.json()
 
-            #  RATE LIMIT HANDLING (safe retry max 2 times)
             if "Note" in resp:
                 if retry < 2:
                     print(f"[{function}] Rate limit hit → retrying...")
@@ -42,7 +45,6 @@ class DataFetcher:
                     print(f"[{function}] Rate limit exceeded (skipping)")
                     return pd.DataFrame(columns=["date", "value"])
 
-            # API ERROR
             if "Error Message" in resp:
                 print(f"[{function}] API error")
                 return pd.DataFrame(columns=["date", "value"])
@@ -95,23 +97,40 @@ class DataFetcher:
 
             data[indicator] = df
 
-            # Slight delay to avoid rate limit
             time.sleep(12)
 
         return data
 
     # ---------------- FETCH FOREX ----------------
     def fetch_forex_data(self, pair: str = "INR=X", days: int = 180) -> pd.DataFrame:
+        global LAST_VALID_FOREX
+
         try:
             end_date = datetime.today().strftime('%Y-%m-%d')
             start_date = (datetime.today() - timedelta(days=days)).strftime('%Y-%m-%d')
 
             print(f"Fetching {pair} data...")
 
-            df = yf.download(pair, start=start_date, end=end_date, progress=False)
+            df = pd.DataFrame()
 
+            # 🔁 RETRY LOGIC
+            for i in range(3):
+                try:
+                    df = yf.download(pair, start=start_date, end=end_date, progress=False)
+                    if not df.empty:
+                        break
+                except Exception as e:
+                    print(f"Retry {i+1} failed: {e}")
+                    time.sleep(3)
+
+            # CRITICAL FIX — fallback
             if df.empty:
-                print("Forex data empty")
+                print("⚠️ Forex data empty")
+
+                if LAST_VALID_FOREX is not None:
+                    print(" Using last valid cached forex data")
+                    return LAST_VALID_FOREX.copy()
+
                 return pd.DataFrame()
 
             # FIX multi-index
@@ -126,17 +145,29 @@ class DataFetcher:
 
             df['date'] = pd.to_datetime(df['date'], errors="coerce")
 
-            return df.dropna().sort_values('date').reset_index(drop=True)
+            df = df.dropna().sort_values('date').reset_index(drop=True)
+
+            # SAVE VALID DATA
+            LAST_VALID_FOREX = df.copy()
+
+            return df
 
         except Exception as e:
             print(f"Error fetching forex data: {str(e)}")
+
+            # fallback even on exception
+            if LAST_VALID_FOREX is not None:
+                print(" Using last valid cached forex data")
+                return LAST_VALID_FOREX.copy()
+
             return pd.DataFrame()
 
     # ---------------- MERGE ----------------
     def merge_all_data(self, forex_df: pd.DataFrame, macro_data: Dict[str, pd.DataFrame]) -> pd.DataFrame:
 
         if forex_df.empty:
-            raise ValueError("Forex data is empty")
+            print("⚠️ Forex data empty → skipping merge")
+            return pd.DataFrame()
 
         df = forex_df.copy()
 

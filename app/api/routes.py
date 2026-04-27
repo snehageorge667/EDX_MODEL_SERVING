@@ -2,6 +2,8 @@ from fastapi import APIRouter, HTTPException, Query
 import pandas as pd
 import numpy as np
 from datetime import datetime
+import os
+import pickle
 
 from app.services.data_fetcher import DataFetcher
 from app.services.preprocessor import DataPreprocessor
@@ -14,7 +16,7 @@ router = APIRouter()
 # ---------------- CACHE ----------------
 CACHE_DATA = {}
 CACHE_TIME = {}
-CACHE_TTL = 300  # seconds
+CACHE_TTL = 21600  # 6 HOURS
 
 
 # ---------------- PAIR FIX ----------------
@@ -30,21 +32,31 @@ def build_pair(base_currency: str, target_currency: str):
 
 # ---------------- COMMON PIPELINE ----------------
 def get_latest_features(pair: str = "INR=X"):
-    global CACHE_DATA
+    global CACHE_DATA, CACHE_TIME
 
-    #  Use cache if available
     if pair in CACHE_DATA:
         return CACHE_DATA[pair]
 
-    #  fallback load
-    try:
-        print(f"⚠️ Cache empty → loading {pair}...")
-        return load_and_store_features(pair)
-    except Exception as e:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Data loading failed. Retry shortly. Error: {str(e)}"
-        )
+    cache_file = f"cache_{pair.replace('=', '')}.pkl"
+
+    if os.path.exists(cache_file):
+        file_time = datetime.fromtimestamp(os.path.getmtime(cache_file))
+
+        if (datetime.now() - file_time).seconds < CACHE_TTL:
+            print(f"📦 Loading {pair} from file cache")
+
+            with open(cache_file, "rb") as f:
+                df = pickle.load(f)
+
+            CACHE_DATA[pair] = df
+            CACHE_TIME[pair] = datetime.now()
+
+            return df
+
+    raise HTTPException(
+        status_code=503,
+        detail="Data not ready yet. Please wait for scheduler."
+    )
 
 
 # ---------------- FUNCTION USED BY SCHEDULER ----------------
@@ -64,6 +76,12 @@ def load_and_store_features(pair: str):
 
     CACHE_DATA[pair] = df
     CACHE_TIME[pair] = datetime.now()
+
+    cache_file = f"cache_{pair.replace('=', '')}.pkl"
+    with open(cache_file, "wb") as f:
+        pickle.dump(df, f)
+
+    print(f"💾 Saved {pair} to file cache")
 
     return df
 
@@ -169,59 +187,47 @@ def iterative_forecast(df, model_type, steps):
 def xgb_future(
     target_date: str = Query(
         ...,
-        description="Enter date in format YYYY-MM-DD (e.g., 2026-04-24)",
-        example="2026-04-24"
+        description="Enter date in format YYYY-MM-DD",
+        examples={"example": {"value": "2026-04-24"}}
     )
 ):
     df = get_latest_features()
     steps = calculate_days(target_date)
     preds = iterative_forecast(df, "xgb", steps)
 
-    return {
-        "target_date": target_date,
-        "predictions": preds
-    }
+    return {"target_date": target_date, "predictions": preds}
 
 
 @router.get("/sarimax/future")
 def sarimax_future(
     target_date: str = Query(
         ...,
-        description="Enter date in format YYYY-MM-DD (e.g., 2026-04-24)",
-        example="2026-04-24"
+        description="Enter date in format YYYY-MM-DD",
+        examples={"example": {"value": "2026-04-24"}}
     )
 ):
     df = get_latest_features()
     steps = calculate_days(target_date)
     preds = iterative_forecast(df, "sarimax", steps)
 
-    return {
-        "target_date": target_date,
-        "predictions": preds
-    }
+    return {"target_date": target_date, "predictions": preds}
 
 
 # ---------------- POST TODAY ----------------
 @router.post("/prediction/today")
 def prediction_today(base_currency: str, target_currency: str):
-    try:
-        pair = build_pair(base_currency, target_currency)
-        df = get_latest_features(pair=pair)
+    pair = build_pair(base_currency, target_currency)
+    df = get_latest_features(pair=pair)
 
-        xgb_pred = float(predict_xgboost(df.tail(1)).iloc[0])
-        sarimax_pred = float(predict_sarimax(df).iloc[-1])
+    xgb_pred = float(predict_xgboost(df.tail(1)).iloc[0])
+    sarimax_pred = float(predict_sarimax(df).iloc[-1])
 
-        return {
-            "pair": f"{base_currency.upper()}_{target_currency.upper()}",
-            "date": datetime.today().strftime("%Y-%m-%d"),
-            "xgboost_prediction": safe_value(xgb_pred),
-            "sarimax_prediction": safe_value(sarimax_pred)
-        }
-
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return {
+        "pair": f"{base_currency.upper()}_{target_currency.upper()}",
+        "date": datetime.today().strftime("%Y-%m-%d"),
+        "xgboost_prediction": safe_value(xgb_pred),
+        "sarimax_prediction": safe_value(sarimax_pred)
+    }
 
 
 # ---------------- POST FUTURE ----------------
@@ -231,27 +237,21 @@ def prediction_future(
     target_currency: str,
     target_date: str = Query(
         ...,
-        description="Enter date in format YYYY-MM-DD (e.g., 2026-04-24)",
-        example="2026-04-24"
+        description="Enter date in format YYYY-MM-DD",
+        examples={"example": {"value": "2026-04-24"}}
     )
 ):
-    try:
-        pair = build_pair(base_currency, target_currency)
-        df = get_latest_features(pair=pair)
+    pair = build_pair(base_currency, target_currency)
+    df = get_latest_features(pair=pair)
 
-        steps = calculate_days(target_date)
+    steps = calculate_days(target_date)
 
-        xgb_preds = iterative_forecast(df.copy(), "xgb", steps)
-        sarimax_preds = iterative_forecast(df.copy(), "sarimax", steps)
+    xgb_preds = iterative_forecast(df.copy(), "xgb", steps)
+    sarimax_preds = iterative_forecast(df.copy(), "sarimax", steps)
 
-        return {
-            "pair": f"{base_currency.upper()}_{target_currency.upper()}",
-            "target_date": target_date,
-            "xgboost_predictions": xgb_preds,
-            "sarimax_predictions": sarimax_preds
-        }
-
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return {
+        "pair": f"{base_currency.upper()}_{target_currency.upper()}",
+        "target_date": target_date,
+        "xgboost_predictions": xgb_preds,
+        "sarimax_predictions": sarimax_preds
+    }
